@@ -37,6 +37,7 @@ def run_agent(question, provider, tools, max_steps=6):
     messages = [{'role': 'system', 'content': SYSTEM_PROMPT},
                 {'role': 'user', 'content': question}]
     trace, usage = [], []
+    sources = []  # URL của incident đã đọc thành công bằng get_incident_details
     for step in range(1, max_steps + 1):
         try:
             response = provider.complete(messages, SCHEMAS)
@@ -50,11 +51,20 @@ def run_agent(question, provider, tools, max_steps=6):
             return _result('error', '', trace, usage, 'Model bị cắt output (finish=length).')
         messages.append(message)
         if not calls:
-            if finish == 'stop':
-                return _result('completed', message.get('content') or '', trace, usage)
-            return _result('error', '', trace, usage, f'Model dừng bất thường: finish={finish}.')
+            if finish != 'stop':
+                return _result('error', '', trace, usage, f'Model dừng bất thường: finish={finish}.')
+            answer = message.get('content') or ''
+            if sources and not any(url in answer for url in sources):
+                trace.append({'event': 'validation_missing_source', 'step': step, 'expected_urls': list(sources)})
+                messages.append({'role': 'user', 'content': 'Câu trả lời chưa dẫn URL nguồn của incident đã đọc. '
+                                 'Hãy viết lại và dẫn ít nhất một URL sau: ' + ', '.join(sources)})
+                continue
+            return _result('completed', answer, trace, usage)
         for call in calls:
             args, result = _run_tool(tools, call)
+            if (call.get('name') == 'get_incident_details' and isinstance(result, dict)
+                    and result.get('ok') and result.get('url') and result['url'] not in sources):
+                sources.append(result['url'])
             trace.append({'event': 'tool', 'step': step, 'name': call.get('name'),
                           'arguments': args, 'result': result})
             messages.append({'role': 'tool', 'tool_call_id': call['id'],
