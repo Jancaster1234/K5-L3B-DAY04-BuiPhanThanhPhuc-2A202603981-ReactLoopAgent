@@ -48,3 +48,33 @@ Chi phí: file eval chỉ có số token, không có số tiền.
 - Snapshot cố định ngày 09/11/2026, không dùng để kết luận tình trạng thực tế; timeout và injection là kịch bản giả lập chỉ có trong eval.
 - Mỗi phiên bản chỉ chạy một lần. Mức tăng +3.45 chủ yếu đến từ H7 và H3 (+108), 20 case còn lại cộng lại -32. Chênh lệch -4 đến +5 ở các case không liên quan cho thấy có nhiễu; không chứng minh độ ổn định.
 - Quy tắc trong prompt không đảm bảo model luôn tuân theo. Kiểm tra nguồn chỉ kiểm tra có mặt một URL, không chứng minh mọi claim đều có nguồn.
+
+## 6. Bonus (tùy chọn)
+
+Lệnh: `python evals/run_evals.py --bonus --output eval_bonus.json`. Cùng model agent và judge `gpt-5.4-mini`, `--max-steps` mặc định 16. Hai lần chạy: v1 (`eval_bonus_v1.json`) và v2 (`eval_bonus.json`, bản nộp).
+
+| Chỉ số | v1 | v2 |
+|---|---|---|
+| Điểm bộ bonus (0-100) | 86.9 | 93.9 |
+| Điểm bonus quy đổi | 13.04/15 | 14.09/15 |
+| Số model calls (10 case) | 29 | 30 |
+
+Điểm từng case (v1 -> v2): B1 100->100, B2 92->100, B3 97->99, B4 93->98, B5 96->100, B6 50->92, B7 94->94, B8 68->97, B9 94->86, B10 85->73.
+
+Thay đổi trong `agent.py`:
+- Dùng `getattr(tools, 'schemas', SCHEMAS)` và `tools.system_prompt` cộng thêm `BONUS_RULES` (5 provider, 429, INVALID_ARGUMENTS, dữ liệu nhiễu, injection, `next_offset`, nguồn theo provider). Không hard-code ID hay câu trả lời.
+- Retry 429: code chặn sau 2 lần `RATE_LIMITED` cho mỗi cặp (tool, provider), trả `RETRY_LIMIT` mà không gọi tool; chờ `Retry-After` nếu trong khoảng 0-10 giây. Lý do: `max_steps` bị chấm 0, nên không để model gọi lặp đến hết bước.
+- Giữ nguyên bước kiểm tra nguồn của bài chính.
+- v2: thêm hai quy tắc vào `BONUS_RULES` sau khi đọc B6 và B8 của v1.
+
+Lỗi đã chọn ở v1:
+- B6 (50): `mechanical.violations` ghi "Chưa gọi tool cần thiết: get_incident_details", điểm bị chặn trần 50. Trace chỉ có 2 status tool, answer dẫn trang chủ status, không có ID hay URL incident. Answer v1 nói rõ không dùng mục nhiễu làm bằng chứng. v2 đạt 92.
+- B8 (68): answer mở đầu "Có, nhưng chỉ ở mức khả năng cùng họ nguyên nhân"; judge nói suy luận này đi ngược expected. v2 đạt 97.
+- Nguyên nhân có thể (Inferred): prompt chưa có quy tắc gọi `get_incident_details` khi cần scope hoặc nguồn incident, và chưa cấm suy đoán nguyên nhân chung.
+
+Giới hạn và lỗi còn lại:
+- B10 (85 -> 73): v2 gọi thêm `get_incident_details` cho Cloudflare và ghi Cloudflare "Partial System Outage hiện tại"; judge cho là quá đà vì incident đã ở trạng thái monitoring. Ở cả hai lần judge đều nói answer không nêu rõ Vercel bị 429 rồi mới retry.
+- B9 (94 -> 86): trace giống hệt hai lần (không gọi tool, không bịa), chỉ khác lời judge (nhắc lại danh sách 5 provider); coi là nhiễu của judge.
+- Chưa đọc trace B2, B4, B7, nên chưa xác nhận hành vi phân trang, dừng retry khi 429 kéo dài và bỏ qua injection; chỉ có điểm judge.
+- Mỗi phiên bản chạy một lần; judge cùng model với agent; điểm bonus chỉ mang tính tham khảo. 429 và lỗi định dạng là giả lập; chưa thử chế độ live.
+- `eval_after.json` (bài chính) chạy trước khi thêm code bonus và không chạy lại. Với tools bài chính hành vi không đổi (Inferred: `StatusTools` không có `schemas` hay `system_prompt` và không trả `RATE_LIMITED`); 37 test bài chính vẫn OK ở bản cuối.
